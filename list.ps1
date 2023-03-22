@@ -1,42 +1,123 @@
-Connect-AzureAD
-$Applications = Get-AzureADApplication -all $true
-$Logs = @()
-Write-host "Applications with the Secrets and Certificates that expire in the next 30 days" -ForegroundColor Green
+param(
+    $daysLogon = 19
+)
 
-foreach ($app in $Applications) {
-    $AppName = $app.DisplayName
-    $AppID = $app.objectid
-    $ApplID = $app.AppId
-    $AppCreds = Get-AzureADApplication -ObjectId $AppID | select PasswordCredentials
-    $secret = $AppCreds.PasswordCredentials
+Import-Module AzureAD
 
-    foreach ($s in $secret) {
-        $StartDate = $s.StartDate
-        $EndDate = $s.EndDate
-        $operation = $EndDate - (Get-Date)
-        $ODays = $operation.Days
 
-        if ($ODays -le 30 -and $ODays -ge 0) {
-            $Log = [PSCustomObject]@{
-                ApplicationName      = $AppName
-                ApplicationID        = $ApplID
-                SecretStartDate      = $StartDate
-                SecretEndDate        = $EndDate
-                CertificateStartDate = ""
-                CertificateEndDate   = ""
-                Owner                = ""
+function email_error() {
+    param(
+        $err1
+    )
+    # Default email variables
+    $EmailFrom = ""
+    $EmailTo = @("")
+    $EmailSubject = ""
+    $SMTPserver = ""
+    $script_time = Get-Date
+    $emailBody = "<html><body><br>
+    <font color='FF0000'>Run at $script_time</font><br /><br />
+    <p>$err1</p>"
+ 
+    # Default sendmail parameters
+    $sendMailParameters = @{
+        From       = $EmailFrom
+        To         = $EmailTo
+        Subject    = $EmailSubject
+        Body       = $emailBody
+        SMTPServer = $SMTPserver
+        BodyAsHTML = $True
+    }
+    # Send the email
+    Send-MailMessage @sendMailParameters
+}
+
+# try { 
+#     $var = Get-AzureADTenantDetail 
+#    } 
+#    catch [Microsoft.Open.Azure.AD.CommonLibrary.AadNeedAuthenticationException] { 
+#     Connect-AzureAD
+#    }
+$days = 0
+
+$ServicePrincipals = Get-AzureADServicePrincipal -All $true | Where-Object { ($_.ServicePrincipalType -ne "ManagedIdentity") }
+$message = ""
+Write-Host "Checking for certificates that expire within $days days"
+$count = 0
+$expiredcount = 0
+$expiredcountp = 0
+foreach ($App in $ServicePrincipals) {
+    #$AppID = ""
+    #Write-Host "----" ($App.DisplayName) "---------------------------------------------------------------------"
+    #Write-Host $App.PasswordCredentials
+    #Write-Host $App.KeyCredentials
+    $countp += 1
+    foreach ($PassCredential in $App.PasswordCredentials) {
+        if ( ($PassCredential.EndDate -lt (Get-Date).AddDays($days)) ) {
+            Write-Host "(Password)    App - " $App.DisplayName " Object Id " ($App.ObjectId) " Password Expiration Date: " $PassCredential.EndDate -Foreground red            
+            $expiredcountp += 1
+            $message += "(Password)&emsp;&nbsp;" + $App.DisplayName + "&emsp;Object Id&emsp;" + $App.ObjectId + "&emsp;Password Expiration Date:" + $PassCredential.EndDate + "<br>"
+        }
+    }
+    if (($App.KeyCredentials).Count -gt 0) { 
+        #Write-Host "----" ($App.DisplayName) "---------------------------------------------------------------------"   
+        $exp_certs = @()
+        $nexp_certs = @()
+        #Write-Host "KeyCredentials:" $App.KeyCredentials
+        foreach ($KeyCredential in $App.KeyCredentials) {
+            #Write-hOST "KeyCredential:" $KeyCredential
+            if ( ($KeyCredential.EndDate -lt (Get-Date).AddDays($days)) ) { 
+                #if (($App.ObjectId) -ne $AppID) {
+                if (($KeyCredential.Usage -eq 'Verify')) {
+                    # Expired/expiring crtificate
+                    #Write-Host "App - " ($App.ObjectId) " Certificate Name: " ($App.DisplayName) " - Expiration Date: " $KeyCredential.EndDate -Foreground red
+                    #$AppID = ($App.ObjectId)
+                    $exp_certs += ($App.DisplayName) + "&emsp;Expiration Date:&emsp;" + ($KeyCredential.EndDate)
+                    #Write-Host "Expired " ($KeyCredential)
+                }
             }
-
-            $Owner = Get-AzureADApplicationOwner -ObjectId $app.ObjectId
-            if ($Owner.UserPrincipalName -eq $Null) {
-                $Log.Owner = $Owner.DisplayName + " **<This is an Application>**"
-            } else {
-                $Log.Owner = $Owner.UserPrincipalName
+            else {
+                # Valid certificate
+                #Write-Host "App - " ($App.ObjectId) " Certificate Name: " ($App.DisplayName) " - Expiration Date: " $KeyCredential.EndDate -Foreground green
+                $nexp_certs += ($App.DisplayName) + " Expiration Date:" + ($KeyCredential.EndDate)
+                #Write-Host "NotExpired " ($nexp_certs.count)
             }
-
-            $Logs += $Log
+            $count = $count + 1
+        }
+        if (($exp_certs.Count -gt 0) -and ($nexp_certs.Count -lt 1)) {
+            #Write-Host "Expireeeeeed " ($exp_certs.count)
+            $expiredcount = $expiredcount + 1
+            foreach ($cert in $exp_certs) {
+                Write-Host "(Certificate) App - " $App.DisplayName " Object Id " ($App.ObjectId) " Certificate Name: " ($cert)  -Foreground red
+                $message += "(Certificate)&emsp;" + $App.DisplayName + "&emsp;Object Id&emsp;" + ($App.ObjectId) + " Certificate Name: " + $cert + "<br>"
+            }
         }
     }
 }
+Write-Host "There are $expiredcount Keys (of $count checked) due to expire or expired."
+Write-Host "There are $expiredcountp passwords (of $countp checked) due to expire or expired." 
 
-$Logs | Format-Table -AutoSize
+$message += "<br>There are $expiredcount Keys (of $count checked) due to expire or expired.<br>"
+$message += "There are $expiredcountp passwords (of $countp checked) due to expire or expired.<br>"
+
+$Query = 'AADServicePrincipalSignInLogs
+| where TimeGenerated > ago(365d)
+| where ResultType == "0"
+| summarize arg_max(TimeGenerated, *) by AppId
+| project TimeGenerated, ServicePrincipalName,ServicePrincipalId, ["Days Since Last Logon"]=datetime_diff("day", now(),TimeGenerated)
+| where ["Days Since Last Logon"] >= 1 | sort by ["Days Since Last Logon"] desc'
+
+$WorkspaceId = '946198b7-1da7-4c87-8fff-65d53e37361e'
+
+$ResultList = Invoke-AzOperationalInsightsQuery -WorkspaceID $WorkspaceId -Query $Query -ErrorAction Stop | select -ExpandProperty Results | select ServicePrincipalName, ServicePrincipalId, 'Days Since Last Logon' | Where-Object { $_ }
+
+#$ResultList[0].ServicePrincipalName
+$message += "<br><br>Service Principals with " + $daysLogon + " Days since Last logon<br>"
+foreach ($sp in $ResultList) {
+    if ([int]$sp.'Days Since Last Logon' -gt $daysLogon) {
+        Write-Host $sp.ServicePrincipalName $sp.'Days Since Last Logon'
+        $message += "Days:" + $sp.'Days Since Last Logon' + "&emsp;Service Principal&emsp;" + $sp.ServicePrincipalName + "&emsp;ID&emsp;" + $sp.ServicePrincipalId + "<br>"
+    }
+}
+
+email_error -err1 "$message"

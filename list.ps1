@@ -1,6 +1,12 @@
 param(
-    $daysLogon = 19
+    $daysLogon = 19,
+  
+    [Parameter (Mandatory = $true,
+        HelpMessage = "Enter the number of days to warn of credential expiry")]
+    [string] $ExpiresInDays
 )
+
+
 
 Import-Module AzureAD
 
@@ -119,5 +125,38 @@ foreach ($sp in $ResultList) {
         $message += "Days:" + $sp.'Days Since Last Logon' + "&emsp;Service Principal&emsp;" + $sp.ServicePrincipalName + "&emsp;ID&emsp;" + $sp.ServicePrincipalId + "<br>"
     }
 }
+
+# Expiration
+
+Write-Host 'Gathering necessary information...'
+$applications = Get-AzADApplication
+$servicePrincipals = Get-AzADServicePrincipal
+
+$appWithCredentials = @()
+$appWithCredentials += $applications | Sort-Object -Property DisplayName | % {
+    $application = $_
+    $sp = $servicePrincipals | ? ApplicationId -eq $application.ApplicationId
+    Write-Verbose ('Fetching information for application {0}' -f $application.DisplayName)
+    $application | Get-AzADAppCredential -ErrorAction SilentlyContinue | Select-Object -Property @{Name = 'DisplayName'; Expression = { $application.DisplayName } }, @{Name = 'ObjectId'; Expression = { $application.Id } }, @{Name = 'ApplicationId'; Expression = { $application.ApplicationId } }, @{Name = 'KeyId'; Expression = { $_.KeyId } }, @{Name = 'Type'; Expression = { $_.Type } }, @{Name = 'StartDate'; Expression = { $_.StartDate -as [datetime] } }, @{Name = 'EndDate'; Expression = { $_.EndDate -as [datetime] } }
+}
+
+Write-Host 'Validating expiration data...'
+$today = (Get-Date).ToUniversalTime()
+$limitDate = $today.AddDays($ExpiresInDays)
+$appWithCredentials | Sort-Object EndDate | % {
+    if ($_.EndDate -lt $today) {
+        $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value 'Expired'
+    }
+    elseif ($_.EndDate -le $limitDate) {
+        $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value 'ExpiringSoon'
+    }
+    else {
+        $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value 'Valid'
+    }
+}
+
+$ExpiringAppCredentials = $appWithCredentials | ? { $_.Status -eq 'Expired' -or $_.Status -eq 'ExpiringSoon' } | Sort-Object -Property DisplayName
+$ExpiringAppCredentialsString = $ExpiringAppCredentials | Out-String
+
 
 email_error -err1 "$message"

@@ -17,7 +17,7 @@ function email_error() {
     $script_time = Get-Date
 
     # Create HTML table
-    $table = "<table><tr><th>App Name</th><th>Object Id</th><th>Owner</th><th>Credential Type</th><th>Credential Name</th><th>Expiring in (Days)</th></tr>"
+    $table = "<table><tr><th>App Name</th><th>App Owner</th><th>Object Id</th><th>Credential Type</th><th>Credential Name</th><th>Expiring in (Days)</th></tr>"
     $table += $err1
     $table += "</table>"
 
@@ -39,20 +39,18 @@ function email_error() {
 $message = ""
 
 # Expiring App Registration Certs and Certificates
-$Applications = Get-AzureADApplication -all $true | Select-Object DisplayName, ObjectId, AppId, PasswordCredentials, KeyCredentials, @{Name="Owner";Expression={(Get-AzureADApplicationOwner -ObjectId $_.ObjectId).DisplayName}}, @{Name="Owners";Expression={(Get-AzureADApplicationOwner -ObjectId $_.ObjectId).DisplayName -join ", "}}
-
-
+$Applications = Get-AzureADApplication -all $true
 $now = get-date
 
 foreach ($app in $Applications) {
     $AppName = $app.DisplayName
     $AppID = $app.objectid
     $ApplID = $app.AppId
-    $AppOwner = $app.Owner
     $AppCreds = Get-AzureADApplication -ObjectId $AppID | select PasswordCredentials, KeyCredentials
     $secret = $AppCreds.PasswordCredentials
     $cert = $AppCreds.KeyCredentials
-    
+    $AppOwner = $app.Owners | select -First 1 -ExpandProperty displayName
+
     foreach ($s in $secret) {
         $StartDate = $s.StartDate
         $EndDate = $s.EndDate
@@ -60,7 +58,7 @@ foreach ($app in $Applications) {
         
         if (($Logs.Days -lt $daysLogon) -and ($Logs.Days -gt 0)) {
             # Append output to message
-            $message += "<tr><td>$AppName</td><td>$AppID</td><td>$AppOwner</td><td>Secret</td><td>$($s.DisplayName)</td><td>$($Logs.Days)</td></tr>"
+            $message += "<tr><td>$AppName</td><td>$AppOwner</td><td>$AppID</td><td>Secret</td><td>$($s.DisplayName)</td><td>$($Logs.Days)</td></tr>"
         }
     }
 
@@ -71,7 +69,7 @@ foreach ($app in $Applications) {
         
         if (($Logs.Days -lt $daysLogon) -and ($Logs.Days -gt 0)) {
             # Append output to message
-            $message += "<tr><td>$AppName</td><td>$AppID</td><td>$AppOwner</td><td>Certificate</td><td>$($c.DisplayName)</td><td>$($Logs.Days)</td></tr>"
+            $message += "<tr><td>$AppName</td><td>$AppOwner</td><td>$AppID</td><td>Certificate</td><td>$($c.DisplayName)</td><td>$($Logs.Days)</td></tr>"
         }
     }
 }
@@ -82,4 +80,5 @@ if ($message -ne "") {
     email_error -err1 "$message"
 }
 else {
-    Write-Host "No expiring App Registration Cert
+    Write-Host "No expiring App Registration Certs and Certificates found."
+}

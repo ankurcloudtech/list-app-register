@@ -1,67 +1,54 @@
-param(
-    [int]$DaysToExpiration = 30 # Set how many days to check for expiration
-)
+# Authenticate to Azure using Managed Identity
+Connect-AzAccount -Identity
 
+
+# Set the threshold in days for nearly expiring secrets/certificates
+$daysThreshold = 30
+
+# Get the current date and the date for comparison (nearly expiring)
 $currentDate = Get-Date
+$nearExpiryDate = $currentDate.AddDays($daysThreshold)
 
-# Get the applications from Azure AD
-$applications = Get-AzureADApplication
+# Get all app registrations in the Azure AD tenant
+$appRegistrations = Get-AzADApplication
 
-# Initialize an array to hold applications with expiring secrets or certificates
-$expiringApplications = @()
+# Create an empty array to store results
+$results = @()
 
-foreach ($app in $applications) {
-    # Check if the application has any password credentials
-    if ($app.PasswordCredentials) {
-        foreach ($secret in $app.PasswordCredentials) {
-            $expirationDate = [datetime]$secret.EndDate
-            # Check if the secret is expiring within the specified number of days
-            if (($expirationDate - $currentDate).Days -le $DaysToExpiration) {
-                $expiringApplications += [PSCustomObject]@{
-                    AppName        = $app.DisplayName
-                    AppId          = $app.AppId
-                    SecretName     = $secret.DisplayName
-                    ExpirationDate = $expirationDate
-                }
+# Loop through each app registration to check for expiring secrets and certificates
+foreach ($app in $appRegistrations) {
+    # Get the app's service principal
+    $servicePrincipal = Get-AzADServicePrincipal -ApplicationId $app.AppId
+
+    # Continue only if service principal is not null
+    if ($servicePrincipal) {
+        # Get the app's credentials (both secrets and certificates)
+        $credentials = Get-AzADServicePrincipalCredential -ObjectId $servicePrincipal.Id
+
+        # Check each credential
+        foreach ($credential in $credentials) {
+            # Determine if the credential is a secret or a certificate based on the 'Type'
+            $type = if ($credential.Type -eq "AsymmetricX509Cert") { "Certificate" } else { "Secret" }
+
+            # Determine the status of the credential
+            if ($credential.EndDate -lt $currentDate) {
+                $status = "Expired"
+            } elseif ($credential.EndDate -lt $nearExpiryDate) {
+                $status = "Expiring Soon"
+            } else {
+                $status = "Valid"
             }
-        }
-    }
 
-    # Check if the application has any key credentials (certificates)
-    if ($app.KeyCredentials) {
-        foreach ($cert in $app.KeyCredentials) {
-            $expirationDate = [datetime]$cert.EndDate
-            # Check if the certificate is expiring within the specified number of days
-            if (($expirationDate - $currentDate).Days -le $DaysToExpiration) {
-                $expiringApplications += [PSCustomObject]@{
-                    AppName        = $app.DisplayName
-                    AppId          = $app.AppId
-                    CertName       = $cert.DisplayName
-                    ExpirationDate = $expirationDate
-                }
+            # Add to results array
+            $results += [pscustomobject]@{
+                "AppName"    = $app.DisplayName
+                "Type"       = $type
+                "ExpiryDate" = $credential.EndDate
+                "Status"     = $status
             }
         }
     }
 }
 
-# Capture output in a variable
-if ($expiringApplications.Count -gt 0) {
-    $output = $expiringApplications | Format-Table -AutoSize | Out-String
-} else {
-    $output = "No applications with expiring secrets or certificates found within the next $DaysToExpiration days."
-}
-
-# Create a credential object for SMTP authentication
-$SMTPUser = "xxxxxxxxxxxxxxxxx"
-$SMTPPassword = ConvertTo-SecureString "xxxxxxxxxxxxxxxxxxxxxxxxxxxx" -AsPlainText -Force
-$SMTPCredential = New-Object System.Management.Automation.PSCredential ($SMTPUser, $SMTPPassword)
-
-# Send email with the results
-$subject = "Azure AD Application Secret/Certificate Expiration Report"
-$body = $output
-$to = "ankur51206@gmail.com"
-$from = "noreply@domain.com"
-$smtpServer = "email-smtp.us-east-1.amazonaws.com"
-$smtpPort = 587
-
-Send-MailMessage -To $to -From $from -Subject $subject -Body $body -SmtpServer $smtpServer -Port $smtpPort -UseSsl -Credential $SMTPCredential
+# Display the results in a table format
+$results | Sort-Object ExpiryDate | Format-Table -Property AppName, Type, ExpiryDate, Status -AutoSize

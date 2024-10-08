@@ -104,9 +104,9 @@ try {
     $emailMessage.IsBodyHtml = $true
 
     # Setup SMTP client
-    $smtpClient = New-Object system.net.mail.smtpclient("email-smtp.us-east-1.amazonaws.com", 587)
+    $smtpClient = New-Object system.net.mail.smtpclient("smtphost", 587)
     $smtpClient.EnableSsl = $true
-    $smtpClient.Credentials = New-Object System.Net.NetworkCredential("AKIAT54DL5XT5MIQXWVP", "BBtqqWomtpGpWjf+HJThss18ui8AlWDnymnfFZcTKdqi")
+    $smtpClient.Credentials = New-Object System.Net.NetworkCredential("smtpuser", "password")
 
     # Send the email
     $smtpClient.Send($emailMessage)
